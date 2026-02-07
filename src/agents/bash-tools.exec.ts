@@ -180,6 +180,8 @@ export type ExecToolDefaults = {
   messageProvider?: string;
   notifyOnExit?: boolean;
   cwd?: string;
+  /** Called when a user explicitly denies exec approval (e.g. via Discord deny button). */
+  onExecDenied?: () => void;
 };
 
 export type { BashSandboxConfig } from "./bash-tools.shared.js";
@@ -1151,6 +1153,11 @@ export function createExecTool(
           }
 
           if (deniedReason) {
+            // Break the agentic chain on explicit user deny so the agent
+            // stops instead of retrying or continuing with more tool calls.
+            if (deniedReason === "user-denied") {
+              defaults?.onExecDenied?.();
+            }
             return {
               content: [
                 {
@@ -1386,6 +1393,11 @@ export function createExecTool(
           }
 
           if (deniedReason) {
+            // Break the agentic chain on explicit user deny so the agent
+            // stops instead of retrying or continuing with more tool calls.
+            if (deniedReason === "user-denied") {
+              defaults?.onExecDenied?.();
+            }
             return {
               content: [
                 {
