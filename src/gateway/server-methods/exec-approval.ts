@@ -109,13 +109,14 @@ export function createExecApprovalHandlers(
         );
         return;
       }
-      const p = params as { id: string; decision: string };
+      const p = params as { id: string; decision: string; resolvedBy?: string };
       const decision = p.decision as ExecApprovalDecision;
       if (decision !== "allow-once" && decision !== "allow-always" && decision !== "deny") {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "invalid decision"));
         return;
       }
-      const resolvedBy = client?.connect?.client?.displayName ?? client?.connect?.client?.id;
+      const resolvedBy =
+        p.resolvedBy?.trim() || client?.connect?.client?.displayName || client?.connect?.client?.id;
       const ok = manager.resolve(p.id, decision, resolvedBy ?? null);
       if (!ok) {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unknown approval id"));
