@@ -144,12 +144,11 @@ export function formatResolvedEmbed(
   const color = decision === "deny" ? 0xed4245 : decision === "allow-always" ? 0x5865f2 : 0x57f287;
 
   const time = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  const shortId = request.id.length > 8 ? request.id.slice(0, 8) : request.id;
   const who = resolvedBy || "Unknown";
   const footerText =
     decision === "deny"
-      ? `Denied by ${who} at ${time} | ID: ${shortId}`
-      : `Approved ${decision} by ${who} at ${time} | ID: ${shortId}`;
+      ? `Denied by ${who} at ${time} | ID: ${request.id}`
+      : `Approved ${decision} by ${who} at ${time} | ID: ${request.id}`;
 
   const fields: Array<{ name: string; value: string; inline: boolean }> = [
     {
@@ -184,8 +183,6 @@ export function formatExpiredEmbed(request: ExecApprovalRequest) {
   const commandText = request.request.command;
   const commandPreview = commandText.length > 500 ? `${commandText.slice(0, 500)}...` : commandText;
 
-  const shortId = request.id.length > 8 ? request.id.slice(0, 8) : request.id;
-
   const fields: Array<{ name: string; value: string; inline: boolean }> = [
     {
       name: "Command",
@@ -210,7 +207,7 @@ export function formatExpiredEmbed(request: ExecApprovalRequest) {
     title: "Exec Approval",
     color: 0x99aab5, // Gray
     fields,
-    footer: { text: `Expired | ID: ${shortId}` },
+    footer: { text: `Expired | ID: ${request.id}` },
     timestamp: new Date().toISOString(),
   };
 }
