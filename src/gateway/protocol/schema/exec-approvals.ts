@@ -107,6 +107,7 @@ export const ExecApprovalResolveParamsSchema = Type.Object(
   {
     id: NonEmptyString,
     decision: NonEmptyString,
+    resolvedBy: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );

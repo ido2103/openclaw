@@ -483,9 +483,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   let lazyResolverClient: GatewayClient | null = null;
   let lazyResolverReady: Promise<void> | null = null;
   const resolveApproval = execApprovalsHandler
-    ? (id: string, decision: ExecApprovalDecision) =>
-        execApprovalsHandler.resolveApproval(id, decision)
-    : async (id: string, decision: ExecApprovalDecision): Promise<boolean> => {
+    ? (id: string, decision: ExecApprovalDecision, resolvedBy?: string) =>
+        execApprovalsHandler.resolveApproval(id, decision, resolvedBy)
+    : async (id: string, decision: ExecApprovalDecision, resolvedBy?: string): Promise<boolean> => {
         if (!lazyResolverClient) {
           lazyResolverReady = new Promise<void>((resolve) => {
             lazyResolverClient = new GatewayClient({
@@ -502,7 +502,11 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         }
         await lazyResolverReady;
         try {
-          await lazyResolverClient!.request("exec.approval.resolve", { id, decision });
+          await lazyResolverClient!.request("exec.approval.resolve", {
+            id,
+            decision,
+            ...(resolvedBy ? { resolvedBy } : {}),
+          });
           return true;
         } catch {
           return false;

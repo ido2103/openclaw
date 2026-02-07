@@ -9,6 +9,8 @@ import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
 import {
   buildExecApprovalComponents,
   formatExecApprovalEmbed,
+  formatExpiredEmbed,
+  formatResolvedEmbed,
 } from "../discord/monitor/exec-approvals.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
@@ -43,16 +45,31 @@ export type ExecApprovalResolved = {
 
 type ForwardTarget = ExecApprovalForwardTarget & { source: "session" | "target" };
 
+type DiscordMessageRef = {
+  channelId: string;
+  messageId: string;
+  accountId?: string;
+};
+
 type PendingApproval = {
   request: ExecApprovalRequest;
   targets: ForwardTarget[];
   timeoutId: NodeJS.Timeout | null;
+  discordMessages: DiscordMessageRef[];
 };
 
 export type ExecApprovalForwarder = {
   handleRequested: (request: ExecApprovalRequest) => Promise<void>;
   handleResolved: (resolved: ExecApprovalResolved) => Promise<void>;
   stop: () => void;
+};
+
+export type EditDiscordEmbedParams = {
+  cfg: OpenClawConfig;
+  channelId: string;
+  messageId: string;
+  embed: Record<string, unknown>;
+  accountId?: string;
 };
 
 export type ExecApprovalForwarderDeps = {
@@ -63,6 +80,7 @@ export type ExecApprovalForwarderDeps = {
     cfg: OpenClawConfig;
     request: ExecApprovalRequest;
   }) => ExecApprovalForwardTarget | null;
+  editDiscordEmbed?: (params: EditDiscordEmbedParams) => Promise<void>;
 };
 
 const DEFAULT_MODE = "session" as const;
@@ -212,6 +230,20 @@ function defaultResolveSessionTarget(params: {
   };
 }
 
+async function defaultEditDiscordEmbed(params: EditDiscordEmbedParams): Promise<void> {
+  const { createDiscordClient } = await import("../discord/send.shared.js");
+  const { Routes } = await import("discord-api-types/v10");
+  const { rest, request } = createDiscordClient({ accountId: params.accountId }, params.cfg);
+  await request(
+    () =>
+      rest.patch(Routes.channelMessage(params.channelId, params.messageId), {
+        body: { content: "", embeds: [params.embed], components: [] },
+      }),
+    "edit-approval",
+  );
+}
+
+/** Deliver to targets and return Discord message refs for later editing. */
 async function deliverToTargets(params: {
   cfg: OpenClawConfig;
   targets: ForwardTarget[];
@@ -219,7 +251,8 @@ async function deliverToTargets(params: {
   channelData?: Record<string, unknown>;
   deliver: typeof deliverOutboundPayloads;
   shouldSend?: () => boolean;
-}) {
+}): Promise<DiscordMessageRef[]> {
+  const discordMessages: DiscordMessageRef[] = [];
   const deliveries = params.targets.map(async (target) => {
     if (params.shouldSend && !params.shouldSend()) {
       return;
@@ -229,7 +262,7 @@ async function deliverToTargets(params: {
       return;
     }
     try {
-      await params.deliver({
+      const results = await params.deliver({
         cfg: params.cfg,
         channel,
         to: target.to,
@@ -237,11 +270,57 @@ async function deliverToTargets(params: {
         threadId: target.threadId,
         payloads: [{ text: params.text, channelData: params.channelData }],
       });
+      // Track Discord message IDs for later editing
+      if (channel === "discord") {
+        for (const r of results) {
+          if (r.messageId && r.messageId !== "unknown") {
+            discordMessages.push({
+              channelId: r.channelId ?? String(r.chatId ?? ""),
+              messageId: r.messageId,
+              accountId: target.accountId,
+            });
+          }
+        }
+      }
     } catch (err) {
       log.error(`exec approvals: failed to deliver to ${channel}:${target.to}: ${String(err)}`);
     }
   });
   await Promise.allSettled(deliveries);
+  return discordMessages;
+}
+
+/** Edit tracked Discord embeds, send text to non-Discord targets. */
+async function updateTargets(params: {
+  cfg: OpenClawConfig;
+  entry: PendingApproval;
+  embed: Record<string, unknown>;
+  text: string;
+  deliver: typeof deliverOutboundPayloads;
+  editDiscordEmbed: (params: EditDiscordEmbedParams) => Promise<void>;
+}) {
+  const { cfg, entry, embed, text, deliver, editDiscordEmbed } = params;
+
+  // Edit Discord embeds in place
+  if (entry.discordMessages.length > 0) {
+    const edits = entry.discordMessages.map(async (msg) => {
+      try {
+        await editDiscordEmbed({ cfg, ...msg, embed });
+      } catch (err) {
+        log.error(`exec approvals: failed to edit discord message: ${String(err)}`);
+      }
+    });
+    await Promise.allSettled(edits);
+  }
+
+  // Send text message to non-Discord targets
+  const nonDiscordTargets = entry.targets.filter((t) => {
+    const ch = normalizeMessageChannel(t.channel) ?? t.channel;
+    return ch !== "discord";
+  });
+  if (nonDiscordTargets.length > 0) {
+    await deliverToTargets({ cfg, targets: nonDiscordTargets, text, deliver });
+  }
 }
 
 export function createExecApprovalForwarder(
@@ -251,6 +330,7 @@ export function createExecApprovalForwarder(
   const deliver = deps.deliver ?? deliverOutboundPayloads;
   const nowMs = deps.nowMs ?? Date.now;
   const resolveSessionTarget = deps.resolveSessionTarget ?? defaultResolveSessionTarget;
+  const editDiscordEmbed = deps.editDiscordEmbed ?? defaultEditDiscordEmbed;
   const pending = new Map<string, PendingApproval>();
 
   const handleRequested = async (request: ExecApprovalRequest) => {
@@ -299,13 +379,21 @@ export function createExecApprovalForwarder(
           return;
         }
         pending.delete(request.id);
+
+        const cfg = getConfig();
+        const embed = formatExpiredEmbed(request);
         const expiredText = buildExpiredMessage(request);
-        await deliverToTargets({ cfg, targets: entry.targets, text: expiredText, deliver });
+        await updateTargets({ cfg, entry, embed, text: expiredText, deliver, editDiscordEmbed });
       })();
     }, expiresInMs);
     timeoutId.unref?.();
 
-    const pendingEntry: PendingApproval = { request, targets, timeoutId };
+    const pendingEntry: PendingApproval = {
+      request,
+      targets,
+      timeoutId,
+      discordMessages: [],
+    };
     pending.set(request.id, pendingEntry);
 
     if (pending.get(request.id) !== pendingEntry) {
@@ -321,7 +409,7 @@ export function createExecApprovalForwarder(
         components,
       },
     };
-    await deliverToTargets({
+    const discordMessages = await deliverToTargets({
       cfg,
       targets,
       text,
@@ -329,6 +417,8 @@ export function createExecApprovalForwarder(
       deliver,
       shouldSend: () => pending.get(request.id) === pendingEntry,
     });
+    // Store Discord message refs for later editing
+    pendingEntry.discordMessages = discordMessages;
   };
 
   const handleResolved = async (resolved: ExecApprovalResolved) => {
@@ -342,8 +432,9 @@ export function createExecApprovalForwarder(
     pending.delete(resolved.id);
 
     const cfg = getConfig();
+    const embed = formatResolvedEmbed(entry.request, resolved.decision, resolved.resolvedBy);
     const text = buildResolvedMessage(resolved);
-    await deliverToTargets({ cfg, targets: entry.targets, text, deliver });
+    await updateTargets({ cfg, entry, embed, text, deliver, editDiscordEmbed });
   };
 
   const stop = () => {

@@ -133,7 +133,7 @@ export function formatExecApprovalEmbed(request: ExecApprovalRequest) {
   };
 }
 
-function formatResolvedEmbed(
+export function formatResolvedEmbed(
   request: ExecApprovalRequest,
   decision: ExecApprovalDecision,
   resolvedBy?: string | null,
@@ -141,47 +141,76 @@ function formatResolvedEmbed(
   const commandText = request.request.command;
   const commandPreview = commandText.length > 500 ? `${commandText.slice(0, 500)}...` : commandText;
 
-  const decisionLabel =
-    decision === "allow-once"
-      ? "Allowed (once)"
-      : decision === "allow-always"
-        ? "Allowed (always)"
-        : "Denied";
-
   const color = decision === "deny" ? 0xed4245 : decision === "allow-always" ? 0x5865f2 : 0x57f287;
 
+  const time = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const shortId = request.id.length > 8 ? request.id.slice(0, 8) : request.id;
+  const who = resolvedBy || "Unknown";
+  const footerText =
+    decision === "deny"
+      ? `Denied by ${who} at ${time} | ID: ${shortId}`
+      : `Approved ${decision} by ${who} at ${time} | ID: ${shortId}`;
+
+  const fields: Array<{ name: string; value: string; inline: boolean }> = [
+    {
+      name: "Command",
+      value: `\`\`\`\n${commandPreview}\n\`\`\``,
+      inline: false,
+    },
+  ];
+
+  if (request.request.cwd) {
+    fields.push({ name: "Working Directory", value: request.request.cwd, inline: true });
+  }
+
+  if (request.request.host) {
+    fields.push({ name: "Host", value: request.request.host, inline: true });
+  }
+
+  if (request.request.agentId) {
+    fields.push({ name: "Agent", value: request.request.agentId, inline: true });
+  }
+
   return {
-    title: `Exec Approval: ${decisionLabel}`,
-    description: resolvedBy ? `Resolved by ${resolvedBy}` : "Resolved",
+    title: "Exec Approval",
     color,
-    fields: [
-      {
-        name: "Command",
-        value: `\`\`\`\n${commandPreview}\n\`\`\``,
-        inline: false,
-      },
-    ],
-    footer: { text: `ID: ${request.id}` },
+    fields,
+    footer: { text: footerText },
     timestamp: new Date().toISOString(),
   };
 }
 
-function formatExpiredEmbed(request: ExecApprovalRequest) {
+export function formatExpiredEmbed(request: ExecApprovalRequest) {
   const commandText = request.request.command;
   const commandPreview = commandText.length > 500 ? `${commandText.slice(0, 500)}...` : commandText;
 
+  const shortId = request.id.length > 8 ? request.id.slice(0, 8) : request.id;
+
+  const fields: Array<{ name: string; value: string; inline: boolean }> = [
+    {
+      name: "Command",
+      value: `\`\`\`\n${commandPreview}\n\`\`\``,
+      inline: false,
+    },
+  ];
+
+  if (request.request.cwd) {
+    fields.push({ name: "Working Directory", value: request.request.cwd, inline: true });
+  }
+
+  if (request.request.host) {
+    fields.push({ name: "Host", value: request.request.host, inline: true });
+  }
+
+  if (request.request.agentId) {
+    fields.push({ name: "Agent", value: request.request.agentId, inline: true });
+  }
+
   return {
-    title: "Exec Approval: Expired",
-    description: "This approval request has expired.",
+    title: "Exec Approval",
     color: 0x99aab5, // Gray
-    fields: [
-      {
-        name: "Command",
-        value: `\`\`\`\n${commandPreview}\n\`\`\``,
-        inline: false,
-      },
-    ],
-    footer: { text: `ID: ${request.id}` },
+    fields,
+    footer: { text: `Expired | ID: ${shortId}` },
     timestamp: new Date().toISOString(),
   };
 }
@@ -480,6 +509,7 @@ export class DiscordExecApprovalHandler {
         () =>
           rest.patch(Routes.channelMessage(channelId, messageId), {
             body: {
+              content: "",
               embeds: [embed],
               components: [], // Remove buttons
             },
@@ -491,7 +521,11 @@ export class DiscordExecApprovalHandler {
     }
   }
 
-  async resolveApproval(approvalId: string, decision: ExecApprovalDecision): Promise<boolean> {
+  async resolveApproval(
+    approvalId: string,
+    decision: ExecApprovalDecision,
+    resolvedBy?: string,
+  ): Promise<boolean> {
     if (!this.gatewayClient) {
       logError("discord exec approvals: gateway client not connected");
       return false;
@@ -503,6 +537,7 @@ export class DiscordExecApprovalHandler {
       await this.gatewayClient.request("exec.approval.resolve", {
         id: approvalId,
         decision,
+        ...(resolvedBy ? { resolvedBy } : {}),
       });
       logDebug(`discord exec approvals: resolved ${approvalId} successfully`);
       return true;
@@ -514,7 +549,11 @@ export class DiscordExecApprovalHandler {
 }
 
 export type ExecApprovalButtonContext = {
-  resolve: (approvalId: string, decision: ExecApprovalDecision) => Promise<boolean>;
+  resolve: (
+    approvalId: string,
+    decision: ExecApprovalDecision,
+    resolvedBy?: string,
+  ) => Promise<boolean>;
 };
 
 export class ExecApprovalButton extends Button {
@@ -542,24 +581,17 @@ export class ExecApprovalButton extends Button {
       return;
     }
 
-    const decisionLabel =
-      parsed.action === "allow-once"
-        ? "Allowed (once)"
-        : parsed.action === "allow-always"
-          ? "Allowed (always)"
-          : "Denied";
-
-    // Update the message immediately to show the decision
+    // Acknowledge the button click by removing buttons (embed stays as-is until resolved)
     try {
       await interaction.update({
-        content: `Submitting decision: **${decisionLabel}**...`,
         components: [], // Remove buttons
       });
     } catch {
       // Interaction may have expired, try to continue anyway
     }
 
-    const ok = await this.ctx.resolve(parsed.approvalId, parsed.action);
+    const displayName = interaction.user?.globalName || interaction.user?.username || undefined;
+    const ok = await this.ctx.resolve(parsed.approvalId, parsed.action, displayName);
 
     if (!ok) {
       try {
@@ -572,7 +604,7 @@ export class ExecApprovalButton extends Button {
         // Interaction may have expired
       }
     }
-    // On success, the handleApprovalResolved event will update the message with the final result
+    // On success, the handleApprovalResolved event will update the embed with the resolved state
   }
 }
 
