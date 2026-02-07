@@ -205,12 +205,16 @@ export async function runEmbeddedAttempt(
 
     // Check if the model supports native image input
     const modelHasVision = params.model.input?.includes("image") ?? false;
+    // Mutable ref: wired to abortRun() once the session is created, so the
+    // exec tool can break the agentic chain when a user explicitly denies.
+    let execDenyAbort: (() => void) | undefined;
     const toolsRaw = params.disableTools
       ? []
       : createOpenClawCodingTools({
           exec: {
             ...params.execOverrides,
             elevated: params.bashElevated,
+            onExecDenied: () => execDenyAbort?.(),
           },
           sandbox,
           messageProvider: params.messageChannel ?? params.messageProvider,
@@ -595,6 +599,8 @@ export async function runEmbeddedAttempt(
         }
         void activeSession.abort();
       };
+      // Wire the exec-deny abort now that abortRun + activeSession exist.
+      execDenyAbort = () => abortRun(false, new Error("exec-user-denied"));
       const abortable = <T>(promise: Promise<T>): Promise<T> => {
         const signal = runAbortController.signal;
         if (signal.aborted) {
