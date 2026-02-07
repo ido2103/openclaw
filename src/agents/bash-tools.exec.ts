@@ -1153,11 +1153,9 @@ export function createExecTool(
           }
 
           if (deniedReason) {
-            // Break the agentic chain on explicit user deny so the agent
+            // Break the agentic chain on deny/timeout so the agent
             // stops instead of retrying or continuing with more tool calls.
-            if (deniedReason === "user-denied") {
-              defaults?.onExecDenied?.();
-            }
+            defaults?.onExecDenied?.();
             return {
               content: [
                 {
@@ -1393,11 +1391,9 @@ export function createExecTool(
           }
 
           if (deniedReason) {
-            // Break the agentic chain on explicit user deny so the agent
+            // Break the agentic chain on deny/timeout so the agent
             // stops instead of retrying or continuing with more tool calls.
-            if (deniedReason === "user-denied") {
-              defaults?.onExecDenied?.();
-            }
+            defaults?.onExecDenied?.();
             return {
               content: [
                 {
