@@ -9,6 +9,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { OpenClawConfig } from "../config/config.js";
 import type { InternalHookHandler } from "./internal-hooks.js";
+import { getBundledHandlerModule } from "./bundled/registry.js";
 import { resolveHookConfig } from "./config.js";
 import { shouldIncludeHook } from "./config.js";
 import { registerInternalHook } from "./internal-hooks.js";
@@ -60,10 +61,25 @@ export async function loadInternalHooks(
       }
 
       try {
-        // Import handler module with cache-busting
-        const url = pathToFileURL(entry.hook.handlerPath).href;
-        const cacheBustedUrl = `${url}?t=${Date.now()}`;
-        const mod = (await import(cacheBustedUrl)) as Record<string, unknown>;
+        // Resolve the handler module: bundled hooks use the static registry
+        // (compiled into the bundle), others use dynamic import from disk.
+        let mod: Record<string, unknown>;
+        if (entry.hook.source === "openclaw-bundled") {
+          const registryMod = getBundledHandlerModule(entry.hook.name);
+          if (!registryMod) {
+            console.error(
+              `Hook error: No bundled handler registered for '${entry.hook.name}'. ` +
+                `Add it to src/hooks/bundled/registry.ts.`,
+            );
+            continue;
+          }
+          mod = registryMod;
+        } else {
+          // Dynamic import for workspace/managed/plugin hooks
+          const url = pathToFileURL(entry.hook.handlerPath).href;
+          const cacheBustedUrl = `${url}?t=${Date.now()}`;
+          mod = (await import(cacheBustedUrl)) as Record<string, unknown>;
+        }
 
         // Get handler function (default or named export)
         const exportName = entry.metadata?.export ?? "default";

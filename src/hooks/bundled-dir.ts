@@ -7,17 +7,11 @@ function hasBundledHooks(dir: string): boolean {
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
       return false;
     }
-    // Check for at least one subdirectory containing a HOOK.md
+    // Check for at least one subdirectory containing a HOOK.md.
+    // Handler files are not required on disk because bundled hook handlers
+    // are statically compiled into the main bundle (see bundled/registry.ts).
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    return entries.some(
-      (e) =>
-        e.isDirectory() &&
-        fs.existsSync(path.join(dir, e.name, "HOOK.md")) &&
-        (fs.existsSync(path.join(dir, e.name, "handler.ts")) ||
-          fs.existsSync(path.join(dir, e.name, "handler.js")) ||
-          fs.existsSync(path.join(dir, e.name, "index.ts")) ||
-          fs.existsSync(path.join(dir, e.name, "index.js"))),
-    );
+    return entries.some((e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, "HOOK.md")));
   } catch {
     return false;
   }

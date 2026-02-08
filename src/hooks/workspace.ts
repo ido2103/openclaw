@@ -81,8 +81,14 @@ function loadHookFromDir(params: {
     }
 
     if (!handlerPath) {
-      console.warn(`[hooks] Hook "${name}" has HOOK.md but no handler file in ${params.hookDir}`);
-      return null;
+      if (params.source === "openclaw-bundled") {
+        // Bundled hook handlers are statically compiled into the main bundle
+        // (see bundled/registry.ts), so a handler file on disk is not required.
+        handlerPath = path.join(params.hookDir, "handler.js");
+      } else {
+        console.warn(`[hooks] Hook "${name}" has HOOK.md but no handler file in ${params.hookDir}`);
+        return null;
+      }
     }
 
     return {
