@@ -2,7 +2,30 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export function resolveBundledHooksDir(): string | undefined {
+function hasBundledHooks(dir: string): boolean {
+  try {
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      return false;
+    }
+    // Check for at least one subdirectory containing a HOOK.md
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    return entries.some(
+      (e) =>
+        e.isDirectory() &&
+        fs.existsSync(path.join(dir, e.name, "HOOK.md")) &&
+        (fs.existsSync(path.join(dir, e.name, "handler.ts")) ||
+          fs.existsSync(path.join(dir, e.name, "handler.js")) ||
+          fs.existsSync(path.join(dir, e.name, "index.ts")) ||
+          fs.existsSync(path.join(dir, e.name, "index.js"))),
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function resolveBundledHooksDir(
+  here = path.dirname(fileURLToPath(import.meta.url)),
+): string | undefined {
   const override = process.env.OPENCLAW_BUNDLED_HOOKS_DIR?.trim();
   if (override) {
     return override;
@@ -12,33 +35,30 @@ export function resolveBundledHooksDir(): string | undefined {
   try {
     const execDir = path.dirname(process.execPath);
     const sibling = path.join(execDir, "hooks", "bundled");
-    if (fs.existsSync(sibling)) {
+    if (hasBundledHooks(sibling)) {
       return sibling;
     }
   } catch {
     // ignore
   }
 
-  // npm: resolve `<packageRoot>/dist/hooks/bundled` relative to this module (compiled hooks).
-  // This path works when installed via npm: node_modules/openclaw/dist/hooks/bundled-dir.js
+  // Walk up from the module directory looking for bundled hooks.
+  // Works in all layouts: source, transpiled (dist/hooks/), and bundled (dist/).
   try {
-    const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-    const distBundled = path.join(moduleDir, "bundled");
-    if (fs.existsSync(distBundled)) {
-      return distBundled;
-    }
-  } catch {
-    // ignore
-  }
-
-  // dev: resolve `<packageRoot>/src/hooks/bundled` relative to dist/hooks/bundled-dir.js
-  // This path works in dev: dist/hooks/bundled-dir.js -> ../../src/hooks/bundled
-  try {
-    const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-    const root = path.resolve(moduleDir, "..", "..");
-    const srcBundled = path.join(root, "src", "hooks", "bundled");
-    if (fs.existsSync(srcBundled)) {
-      return srcBundled;
+    let current = here;
+    for (let i = 0; i < 5; i++) {
+      // Check both src/ and dist/ relative to current directory
+      for (const sub of ["src/hooks/bundled", "hooks/bundled", "dist/hooks/bundled"]) {
+        const candidate = path.join(current, sub);
+        if (hasBundledHooks(candidate)) {
+          return candidate;
+        }
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        break;
+      }
+      current = parent;
     }
   } catch {
     // ignore
